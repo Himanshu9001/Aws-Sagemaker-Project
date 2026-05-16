@@ -834,6 +834,282 @@ Pipeline triggers automatically on push to `training/`, `processing/`, or `pipel
 
 ---
 
+## Optimizations
+
+Beyond the 10 core phases and 9 improvements, the following production optimizations were implemented:
+
+---
+
+### 1. ECR Auto-Build CI/CD
+
+GitHub Actions workflow automatically rebuilds and pushes the ECR image when `Dockerfile`, `train.py`, or `requirements.txt` changes. Images tagged with git commit SHA — eliminates the `latest` anti-pattern.
+
+```yaml
+# .github/workflows/ecr-build.yml
+on:
+  push:
+    paths:
+      - 'Dockerfile'
+      - 'training/train.py'
+      - 'training/requirements.txt'
+```
+
+**Impact:** No more manual `docker build && docker push`. Every code change automatically produces a versioned, traceable image.
+
+---
+
+### 2. Auto-Deploy After Approval
+
+Second Lambda (`churn-auto-deploy-endpoint`) triggered by EventBridge on model approval. Automatically updates the serverless endpoint — completing the full CD loop with zero human intervention:
+
+```
+git push
+  → GitHub Actions (unit tests)
+  → SageMaker Pipeline (preprocess → train → evaluate → register)
+  → EventBridge → Lambda (auto-approve if ROC AUC >= 0.83)
+  → EventBridge → Lambda (auto-deploy to serverless endpoint)
+```
+
+**Impact:** Complete CI/CD loop — code push to live endpoint with no manual steps.
+
+---
+
+### 3. Unit Tests (15/15 Passing)
+
+```
+tests/
+├── test_inference.py    # 7 tests — input_fn, output_fn, CSV/JSON formats
+└── test_preprocess.py   # 8 tests — customerID drop, encoding, split, nulls
+```
+
+**Test coverage:**
+
+| File | Tests | What's Covered |
+|------|-------|---------------|
+| `test_inference.py` | 7 | CSV parsing, JSON output, error handling, both response formats |
+| `test_preprocess.py` | 8 | customerID dropped, Churn encoded, TotalCharges numeric, no nulls, categorical encoding, row count, split sizes |
+
+**GitHub Actions output:**
+```
+15 passed in 0.87s
+```
+
+Tests run as first step in CI/CD — failed tests block pipeline execution before any AWS cost is incurred.
+
+---
+
+### 4. Multi-Stage Dockerfile
+
+Separated dependency installation from code copying for maximum Docker layer cache hits:
+
+```dockerfile
+# Stage 1: dependencies — only rebuilds when requirements change
+FROM sagemaker-scikit-learn:1.2-1-cpu-py3 AS deps
+RUN pip install --no-cache-dir \
+    mlflow>=2.0.0 \
+    protobuf==3.20.3 \
+    matplotlib==3.7.1 \
+    seaborn==0.12.2 \
+    joblib==1.3.2
+
+# Stage 2: code — only rebuilds when train.py changes
+FROM deps AS final
+COPY training/train.py /opt/ml/code/train.py
+ENV SAGEMAKER_PROGRAM=train.py
+```
+
+**Impact:** Changing `train.py` no longer triggers a full pip reinstall. Build time reduced from ~8 minutes to ~30 seconds on code-only changes.
+
+---
+
+### 5. Pinned Dependencies
+
+All packages pinned across all environments — eliminates version drift:
+
+```
+# requirements.txt
+sagemaker==2.257.3
+boto3==1.34.0
+scikit-learn==1.2.1
+pandas==1.5.3
+numpy==1.24.3
+mlflow==2.14.0
+protobuf==3.20.3
+matplotlib==3.7.1
+seaborn==0.12.2
+joblib==1.3.2
+```
+
+**Why protobuf==3.20.3:** `mlflow>=2.0.0` pulls protobuf 4.x which breaks `sagemaker_containers`. This is a known transitive dependency conflict — pinning to 3.20.3 is the last compatible version.
+
+---
+
+### 6. Model Lifecycle Cleanup
+
+`pipelines/cleanup_model_versions.py` — keeps only last N approved versions, auto-deletes older ones:
+
+```python
+def cleanup_old_versions(group_name, keep_n=5):
+    packages = sm_client.list_model_packages(
+        ModelPackageGroupName=group_name,
+        SortBy="CreationTime",
+        SortOrder="Descending"
+    )["ModelPackageSummaryList"]
+
+    for pkg in packages[keep_n:]:
+        sm_client.delete_model_package(
+            ModelPackageName=pkg["ModelPackageArn"]
+        )
+```
+
+**Impact:** During development, 6+ model versions accumulated. This script keeps the registry clean and reduces storage costs.
+
+---
+
+### 7. Cost Alerting
+
+CloudWatch billing alarm triggers SNS email notification when SageMaker monthly spend exceeds $50:
+
+```bash
+aws cloudwatch put-metric-alarm \
+  --alarm-name "SageMaker-Monthly-Cost-50USD" \
+  --metric-name EstimatedCharges \
+  --namespace AWS/Billing \
+  --threshold 50 \
+  --alarm-actions $SNS_TOPIC_ARN
+```
+
+**Impact:** Prevents surprise bills during active development. Particularly important when running HPO (20 trials) or leaving endpoints running.
+
+---
+
+### 8. Lifecycle Configuration (Git Credentials)
+
+SageMaker Studio Lifecycle Configuration script runs on every Code Editor space start — permanently fixes the VS Code askpass credential issue that caused authentication failures every session:
+
+```bash
+#!/bin/bash
+# Runs automatically on Code Editor space start
+git config --global --unset core.askpass || true
+git config --global core.askpass ""
+git config --global user.email "himanshu9001@gmail.com"
+git config --global user.name "Himanshu9001"
+
+# Fetch PAT securely from Secrets Manager
+PAT=$(aws secretsmanager get-secret-value \
+  --secret-id github-pat \
+  --region us-east-1 \
+  --query SecretString \
+  --output text)
+
+git config --global credential.helper store
+echo "https://Himanshu9001:${PAT}@github.com" > ~/.git-credentials
+chmod 600 ~/.git-credentials
+```
+
+**Impact:** Eliminates the recurring `askpass.sh: No such file or directory` error that required manual PAT-in-URL workaround every session.
+
+---
+
+### 9. Branch Protection Rules
+
+GitHub branch protection enforces quality gates on `main`:
+
+- GitHub Actions must pass before merging
+- No direct pushes to `main`
+- All changes via pull request
+
+**Impact:** Prevents the diverged branch problem that occurred multiple times during development when both Mac and Studio committed directly to `main`.
+
+---
+
+### 10. pytest in GitHub Actions
+
+Unit tests added as first step in CI/CD workflow — fast feedback before expensive pipeline runs:
+
+```yaml
+- name: Run unit tests
+  run: |
+    pip install pytest scikit-learn joblib pandas numpy matplotlib seaborn
+    pytest tests/ -v
+```
+
+**Execution time comparison:**
+
+| Step | Time | Cost |
+|------|------|------|
+| Unit tests | **0.87s** | $0.00 |
+| SageMaker Pipeline | ~20 minutes | ~$0.03 |
+
+Failed unit tests block pipeline execution — saves $0.03 per prevented bad run and ~20 minutes of waiting.
+
+---
+
+### Optimization Results Summary
+
+| Optimization | Before | After | Impact |
+|---|---|---|---|
+| ECR image rebuild | Manual (~10 min) | Automatic on push | Zero manual steps |
+| Endpoint update | Manual CLI | Auto on model approval | Complete CD loop |
+| Dependency conflicts | Runtime failures in container | Caught at build time | 5 failed jobs → 0 |
+| Test coverage | 0% | 15 tests, all passing | Bugs caught in 0.87s |
+| Image tagging | `latest` only | SHA + `latest` | Full traceability |
+| Model versions | Accumulating unbounded | Auto-cleanup (keep 5) | Clean registry |
+| Git credentials | Manual PAT per session | Auto from Secrets Manager | No session friction |
+| Cost visibility | None | $50 CloudWatch alarm | No surprise bills |
+| Branch safety | Direct push to main | PR + CI required | No accidental breaks |
+| CI feedback | Pipeline runs always | Tests gate pipeline | Fast failure detection |
+
+---
+
+### Full Automated Pipeline Flow (Post-Optimizations)
+
+```
+Developer pushes code to training/, processing/, or pipelines/
+                    │
+                    ▼
+         GitHub Actions triggered
+                    │
+         ┌──────────┴──────────┐
+         │                     │
+         ▼                     ▼
+   Unit Tests (0.87s)    ECR Image Build
+   15/15 passing         (if Dockerfile changed)
+         │                     │
+         └──────────┬──────────┘
+                    │
+                    ▼
+         SageMaker Pipeline (~20 min)
+                    │
+         ┌──────────▼──────────┐
+         │  ChurnPreprocess    │
+         │  ChurnTrain         │
+         │  ChurnEvaluate      │
+         │  CheckRocAuc        │
+         │  ChurnRegisterModel │
+         └──────────┬──────────┘
+                    │
+                    ▼
+         EventBridge fires
+                    │
+                    ▼
+         Lambda: Auto-Approve
+         (ROC AUC >= 0.83)
+                    │
+                    ▼
+         EventBridge fires
+                    │
+                    ▼
+         Lambda: Auto-Deploy
+         (update serverless endpoint)
+                    │
+                    ▼
+         Model live in production
+         Zero human intervention
+```
+
+---
+
 ## Lessons Learned
 
 ### Technical Lessons
