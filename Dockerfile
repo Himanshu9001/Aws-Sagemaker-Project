@@ -25,6 +25,7 @@ FROM deps AS final
 
 # Copy training scripts — invalidates only this layer when code changes
 COPY training/train.py /opt/ml/code/train.py
+COPY training/finetune.py /opt/ml/code/finetune.py
 COPY training/requirements.txt /opt/ml/code/requirements.txt
 
 WORKDIR /opt/ml/code
