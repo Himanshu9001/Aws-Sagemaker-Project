@@ -1178,6 +1178,307 @@ This project was built as a deliberate comparison against the [self-built EKS ML
 
 ---
 
+---
+
+## LLMOps — Hybrid ML Pipeline
+
+Beyond classical MLOps, this project implements a hybrid ML + LLM pipeline that combines RandomForest for churn prediction with Flan-T5-Large for natural language retention recommendations.
+
+---
+
+### Architecture
+
+```
+Customer features (19 columns)
+        │
+        ▼
+RandomForest Serverless Endpoint
+        │
+        ├── churn_probability: 0.68
+        ├── label: "Churn"
+        └── top_features: [Contract, MonthlyCharges, tenure]
+        │
+        ▼
+Prompt Manager (versioned templates)
+        │
+        ▼
+Flan-T5-Large Endpoint (ml.m5.xlarge)
+        │
+        ▼
+┌─────────────────────────────────────────────┐
+│  Combined Response                          │
+│  prediction:         1                      │
+│  churn_probability:  0.68                   │
+│  label:              "Churn"                │
+│  risk_level:         "Medium"               │
+│  explanation:        "Customer has high..." │
+│  llm_recommendation: "a free upgrade"       │
+│  model_pipeline:     "RF + Flan-T5-Large"  │
+└─────────────────────────────────────────────┘
+        │
+        ▼
+Langfuse Observability
+(every call traced — input, output, latency)
+```
+
+---
+
+### Components
+
+#### 1. Hybrid Inference
+
+Two endpoints work together per request:
+
+| Step | Component | Output |
+|------|-----------|--------|
+| 1 | RandomForest (serverless) | churn_probability, top_features |
+| 2 | Prompt Manager | compiled prompt from versioned template |
+| 3 | Flan-T5-Large (ml.m5.xlarge) | natural language recommendation |
+| 4 | Combined response | structured JSON with all fields |
+
+**Sample output:**
+```json
+{
+  "prediction": 1,
+  "churn_probability": 0.6812,
+  "label": "Churn",
+  "risk_level": "Medium",
+  "top_features": [
+    {"feature": "Contract", "value": "month-to-month"},
+    {"feature": "MonthlyCharges", "value": "$86"},
+    {"feature": "tenure", "value": "3 months"}
+  ],
+  "explanation": "Customer has high churn risk (68%). Key factors: Contract=month-to-month, MonthlyCharges=$86, tenure=3 months.",
+  "llm_recommendation": "a free upgrade to a higher plan",
+  "model_pipeline": "RandomForest + Flan-T5-Large"
+}
+```
+
+**Why hybrid?** RandomForest gives accurate, explainable predictions (ROC AUC 0.8445). Flan-T5 converts SHAP-derived insights into business-readable retention actions — giving both ML accuracy and business interpretability.
+
+---
+
+#### 2. Langfuse Observability
+
+Every inference call traced with two observation types:
+
+| Observation | Type | Captures |
+|-------------|------|----------|
+| `randomforest-prediction` | SPAN | features input, prediction output, latency |
+| `flan-t5-recommendation` | GENERATION | prompt, model output, model parameters, latency |
+
+**Dashboard:** https://cloud.langfuse.com → project `churn-prediction`
+
+**What Langfuse provides that CloudWatch doesn't:**
+- Full prompt + response logging per call
+- LLM-specific cost estimation
+- Token usage tracking
+- Model parameter versioning
+- Latency breakdown by component
+
+**Implementation:** Non-fatal tracing — if Langfuse is unavailable, inference continues normally. Traces are flushed asynchronously after each request.
+
+---
+
+#### 3. Prompt Versioning
+
+Version-controlled prompt templates with Langfuse as deployment registry:
+
+```
+llm/prompts/
+├── v1/
+│   ├── retention.txt    ← production (simple Q&A format)
+│   └── engagement.txt   ← production
+├── v2/
+│   ├── retention.txt    ← staging (role-play format)
+│   └── engagement.txt   ← staging
+└── registry.json        ← maps versions to Langfuse names + labels
+```
+
+**Deployment workflow:**
+```
+Edit prompts/v2/retention.txt
+    → python prompt_manager.py register_version("v2")
+    → Langfuse: churn-retention-v2 (staging label)
+    → Evaluate with evaluate_llm.py
+    → If score improves: promote_to_production("v2", "retention")
+    → Langfuse: churn-retention-v2 (production label)
+    → Update registry.json: active_version = "v2"
+```
+
+**Current state:**
+
+| Version | Type | Label | Score |
+|---------|------|-------|-------|
+| v1 | retention | **production** | 0.36 |
+| v1 | engagement | **production** | 0.36 |
+| v2 | retention | staging | 0.21 |
+| v2 | engagement | staging | 0.21 |
+
+v1 remains in production — evaluation confirmed it outperforms v2 for Flan-T5-Large.
+
+---
+
+#### 4. LLM Evaluation (DeepEval)
+
+Automated quality scoring — no human review needed:
+
+```
+llm/evaluate_llm.py
+├── 3 test cases (high/medium/low churn risk)
+├── Rule-based relevancy scoring (keyword matching)
+├── Actionability scoring (business-specific)
+└── v1 vs v2 comparison with winner recommendation
+```
+
+**Evaluation metrics:**
+
+| Metric | What it measures |
+|--------|-----------------|
+| Relevancy | Does output contain business-relevant keywords? |
+| Actionability | Does output suggest a specific action? |
+| Pass rate | % of outputs scoring above threshold (0.3) |
+| Overall score | Average of relevancy + actionability |
+
+**Results:**
+
+| Metric | v1 (production) | v2 (staging) | Winner |
+|--------|----------------|--------------|--------|
+| Pass rate | **100%** | 100% | tie |
+| Avg relevancy | **0.51** | 0.41 | v1 ✅ |
+| Avg actionability | **0.20** | 0.00 | v1 ✅ |
+| Overall score | **0.36** | 0.21 | v1 ✅ |
+
+**Key finding:** v2 role-play format performs worse with Flan-T5-Large — the model echoes structured prompt elements instead of generating new recommendations. Larger models (Llama-70B, Claude) would likely reverse this finding.
+
+---
+
+#### 5. Fine-Tuning Pipeline (Implemented — Pending GPU Quota)
+
+Dataset, training script, and job submission code complete:
+
+```
+llm/finetuning/
+├── create_dataset.py      # generates 40 telecom Q&A pairs
+├── train_data.json        # saved to S3
+├── finetune.py            # HuggingFace Trainer, 5 epochs, lr=3e-4
+└── run_finetuning_job.py  # SageMaker Training Job submission
+```
+
+**Dataset:** 40 telecom retention Q&A pairs covering high/medium/low churn scenarios with price and tenure variations.
+
+**Training config:**
+```python
+TrainingArguments(
+    num_train_epochs=5,
+    per_device_train_batch_size=4,
+    learning_rate=3e-4,
+    eval_strategy="epoch",
+    load_best_model_at_end=True,
+)
+```
+
+**Status:** Code complete. Infrastructure blocker documented:
+- Current ECR image (`churn-mlops:inference`) designed for RandomForest training
+- Fine-tuning requires separate image with `transformers`, `torch`, `sentencepiece`
+- Solution: split into `churn-mlops:inference` and `churn-mlops:finetune` images
+- GPU quota request submitted for `ml.g4dn.xlarge`
+
+---
+
+### LLMOps File Structure
+
+```
+llm/
+├── deploy_flan_t5.py              # JumpStart deployment script
+├── hybrid_inference.py            # RF + Flan-T5 without tracing
+├── hybrid_inference_langfuse.py   # RF + Flan-T5 with full Langfuse tracing
+├── prompt_manager.py              # Prompt versioning + Langfuse registry
+├── evaluate_llm.py                # Automated evaluation suite
+├── prompts/
+│   ├── registry.json              # Version → Langfuse name mapping
+│   ├── v1/
+│   │   ├── retention.txt          # Production prompt
+│   │   └── engagement.txt         # Production prompt
+│   └── v2/
+│       ├── retention.txt          # Staging prompt
+│       └── engagement.txt         # Staging prompt
+└── finetuning/
+    ├── create_dataset.py          # Dataset generation
+    ├── train_data.json            # 40 Q&A pairs
+    ├── finetune.py                # HuggingFace fine-tuning script
+    └── run_finetuning_job.py      # SageMaker Training Job
+```
+
+---
+
+### Model Comparison: Base vs Fine-tuned (Expected)
+
+| Customer Type | Base Flan-T5-Large | Fine-tuned (Expected) |
+|--------------|-------------------|-----------------------|
+| High risk, month-to-month | `a free upgrade` | `Offer 20% discount on annual contract` |
+| Low risk, 72 months | `a customer retention program` | `Award platinum loyalty status` |
+| Medium risk, fiber optic | `a customer retention program` | `Add free tech support bundle` |
+
+Fine-tuning on domain-specific telecom data expected to improve specificity and actionability scores from 0.36 → 0.65+.
+
+---
+
+### LLMOps vs Classical MLOps: Key Differences
+
+| Concern | Classical MLOps | LLMOps |
+|---------|----------------|--------|
+| Model evaluation | ROC AUC, F1, accuracy | Relevancy, faithfulness, actionability |
+| Versioning | Model artifacts in S3 | Prompt templates + model weights |
+| Monitoring | Data drift, prediction drift | Hallucination rate, output quality |
+| Observability | CloudWatch metrics | LLM traces (Langfuse) |
+| Deployment | Endpoint update | Prompt promotion (zero downtime) |
+| Testing | Unit tests, integration tests | LLM evaluation suites |
+| Cost unit | $/Training Job | $/1K tokens |
+
+---
+
+### Why Flan-T5 Instead of GPT-4 / Claude API
+
+| Concern | Flan-T5 (self-hosted) | GPT-4 / Claude (API) |
+|---------|----------------------|----------------------|
+| Data privacy | Customer data stays in VPC | Sent to third-party servers |
+| Cost at scale | Fixed endpoint cost | $0.03-0.12 per 1K tokens |
+| Latency | ~2s warm | ~1-3s (network dependent) |
+| Quality | Limited (780M params) | Excellent |
+| GDPR compliance | Full control | Requires DPA agreement |
+| Customization | Fine-tunable | Prompt engineering only |
+
+**For a real telecom with GDPR obligations and millions of customers:** self-hosted fine-tuned model wins on privacy and cost. For a startup with <1M predictions/month: Claude API wins on quality and time-to-production.
+
+---
+
+### Running the LLMOps Stack
+
+```bash
+# Deploy Flan-T5 endpoint (~8 minutes)
+python llm/deploy_flan_t5.py
+
+# Run hybrid inference (RF + Flan-T5)
+python llm/hybrid_inference.py
+
+# Run with Langfuse tracing
+python llm/hybrid_inference_langfuse.py
+
+# Manage prompts
+python llm/prompt_manager.py
+
+# Evaluate LLM quality
+python llm/evaluate_llm.py
+
+# Delete endpoint when done (~$0.46/hr)
+aws sagemaker delete-endpoint \
+  --endpoint-name churn-flan-t5-endpoint \
+  --region us-east-1
+```
+
+---
+
 ## Author
 
 **Himanshu Singh (Heman)**

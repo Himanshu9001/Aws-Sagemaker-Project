@@ -1220,5 +1220,442 @@ aws s3 ls s3://bucket/models/ --recursive | grep model.tar.gz
 
 ---
 
+---
+
+## 14. LLMOps Issues
+
+---
+
+### Issue 14.1 — Flan-T5 JumpStart: Wrong payload format (422 error)
+
+**Error:**
+```
+ModelError: Received client error (422) from primary with message 
+"Failed to deserialize the JSON body into the target type: 
+data did not match any variant of untagged enum SagemakerRequest"
+```
+
+**Root cause:** JumpStart Flan-T5 expects `{"inputs": "..."}` format, not `{"text_inputs": "..."}`.
+
+**Wrong:**
+```python
+payload = {
+    "text_inputs": "your prompt",
+    "max_length": 100,
+    "temperature": 0.7,
+}
+```
+
+**Correct:**
+```python
+payload = {
+    "inputs": "your prompt",
+    "parameters": {
+        "max_new_tokens": 100,
+        "temperature": 0.7,
+    }
+}
+```
+
+**How to discover correct schema for any JumpStart model:**
+```python
+# Check model spec from JumpStart
+from sagemaker.jumpstart.model import JumpStartModel
+model = JumpStartModel(model_id="huggingface-text2text-flan-t5-large")
+print(model.retrieve_default_hyperparameters())
+```
+
+---
+
+### Issue 14.2 — Flan-T5 echoes entire prompt in output
+
+**Symptom:**
+```
+Input:  "What is the best offer... paying $85 monthly?"
+Output: "What is the best offer... paying $85 monthly?a free upgrade"
+```
+
+**Root cause:** Flan-T5 is a text2text model — it generates a continuation of the input. When the prompt doesn't have a clear completion boundary, the model echoes the input.
+
+**Fix:** Strip the prompt from the output:
+```python
+raw_output = result[0]["generated_text"]
+output = raw_output.replace(prompt, "").strip()
+# Fallback for partial matches
+if not output:
+    output = raw_output.split("?")[-1].strip()
+```
+
+**Prevention:** Use prompts that end with a clear completion marker:
+```
+# Bad — model echoes
+"What is the best offer for a customer paying $85?"
+
+# Good — model completes
+"Customer pays $85/month, 3 months tenure. Best retention offer:"
+```
+
+---
+
+### Issue 14.3 — Flan-T5-Base too small for reasoning
+
+**Symptom:** Model outputs generic or nonsensical responses:
+```
+Input:  "What retention action for customer with 78% churn risk?"
+Output: "terminate the contract"   ← wrong direction
+Output: "The customer will be able to pay the bill in full"  ← irrelevant
+```
+
+**Root cause:** Flan-T5-Base (250M parameters) lacks sufficient reasoning capacity for structured business tasks. It pattern-matches rather than reasons.
+
+**Fix:** Upgrade to Flan-T5-Large (780M params) — same CPU-compatible, better outputs:
+```python
+# Replace Base with Large
+model = JumpStartModel(
+    model_id="huggingface-text2text-flan-t5-large",  # was flan-t5-base
+    model_version="2.3.14",
+    instance_type="ml.m5.2xlarge",  # was ml.m5.xlarge
+)
+```
+
+**Cost impact:** `ml.m5.xlarge` ($0.23/hr) → `ml.m5.2xlarge` ($0.46/hr). 2x cost for significantly better outputs.
+
+---
+
+### Issue 14.4 — Langfuse v4 API: `.trace()` method removed
+
+**Error:**
+```
+AttributeError: 'Langfuse' object has no attribute 'trace'
+```
+
+**Root cause:** Langfuse v4 (4.6.1) completely redesigned the API from imperative to OpenTelemetry-based. The `langfuse.trace()`, `langfuse.span()`, and `langfuse.generation()` methods from v2/v3 were removed.
+
+**v3 API (broken in v4):**
+```python
+trace = langfuse.trace(name="my-trace")
+span  = trace.span(name="my-span")
+gen   = trace.generation(name="my-gen")
+```
+
+**v4 API (correct):**
+```python
+with langfuse.start_as_current_observation(
+    name="my-span",
+    as_type="span",
+    input={"data": "..."},
+):
+    # your code here
+    langfuse.update_current_span(output=result)
+```
+
+**Available `as_type` values:** `span`, `generation`, `agent`, `tool`, `chain`, `retriever`, `evaluator`, `guardrail`
+
+---
+
+### Issue 14.5 — Langfuse v4: `langfuse.decorators` module missing
+
+**Error:**
+```
+ModuleNotFoundError: No module named 'langfuse.decorators'
+```
+
+**Root cause:** In Langfuse v4, `observe` decorator moved from `langfuse.decorators` to the top-level `langfuse` module.
+
+**Wrong:**
+```python
+from langfuse.decorators import observe, langfuse_context
+```
+
+**Correct:**
+```python
+from langfuse import observe, Langfuse
+```
+
+**Check available attributes for your installed version:**
+```python
+import langfuse
+print([m for m in dir(langfuse) if not m.startswith('_')])
+```
+
+---
+
+### Issue 14.6 — Langfuse: `start_as_current_observation` unexpected keyword `type`
+
+**Error:**
+```
+TypeError: Langfuse.start_as_current_observation() got an unexpected keyword argument 'type'
+```
+
+**Root cause:** The parameter is `as_type`, not `type`.
+
+**Wrong:**
+```python
+with langfuse.start_as_current_observation(type="generation", ...):
+```
+
+**Correct:**
+```python
+with langfuse.start_as_current_observation(as_type="generation", ...):
+```
+
+**Check exact signature:**
+```python
+from langfuse import Langfuse
+import inspect
+lf = Langfuse(public_key="...", secret_key="...", host="...")
+print(inspect.signature(lf.start_as_current_observation))
+```
+
+---
+
+### Issue 14.7 — Langfuse: `set_current_trace_io` deprecation warning
+
+**Warning:**
+```
+DeprecationWarning: Trace-level input/output is deprecated. 
+For trace attributes (user_id, session_id, tags, etc.), 
+use propagate_attributes() instead.
+```
+
+**Fix:** Remove `set_current_trace_io` calls — they are no longer needed in v4:
+```python
+# Remove this
+langfuse.set_current_trace_io(
+    input={"customer_id": customer_id},
+    output=result
+)
+
+# v4 handles trace I/O automatically from the root observation
+```
+
+---
+
+### Issue 14.8 — Langfuse: `Context error: No active span`
+
+**Warning:**
+```
+Context error: No active span in current context. 
+Operations that depend on an active span will be skipped.
+```
+
+**Root cause:** Calling `langfuse.update_current_span()` or `langfuse.update_current_generation()` outside of an active `start_as_current_observation()` context manager.
+
+**Fix:** Ensure all update calls are inside the context:
+```python
+# Wrong — update called outside context
+with langfuse.start_as_current_observation(name="my-span", as_type="span"):
+    result = do_something()
+langfuse.update_current_span(output=result)  # ← outside context, fails
+
+# Correct — update called inside context
+with langfuse.start_as_current_observation(name="my-span", as_type="span"):
+    result = do_something()
+    langfuse.update_current_span(output=result)  # ← inside context
+```
+
+---
+
+### Issue 14.9 — HuggingFace Estimator: CPU not supported
+
+**Error:**
+```
+ValueError: Unsupported processor: cpu. 
+Supported processor(s): gpu.
+```
+
+**Root cause:** All HuggingFace SageMaker estimator versions (`transformers_version=4.26`, `4.36`) only support GPU instances (`ml.g4dn.*`, `ml.g5.*`). CPU instances are not supported regardless of framework version.
+
+**Options:**
+1. Request GPU quota: `aws service-quotas request-service-quota-increase --service-code sagemaker --quota-code L-B581F5B1 --desired-value 1`
+2. Use custom ECR image with `Estimator` class instead of `HuggingFace` class
+3. Run fine-tuning locally on Mac with `transformers` directly
+
+---
+
+### Issue 14.10 — Fine-tuning: `finetune.py` not found in container
+
+**Error:**
+```
+/miniconda3/bin/python: can't open file '/opt/ml/code/finetune.py': 
+[Errno 2] No such file or directory
+```
+
+**Root cause:** Multiple compounding issues:
+1. `Estimator` class (unlike `SKLearn`) doesn't automatically package `source_dir`
+2. `SKLearn` estimator with `image_uri` override still uses the baked `SAGEMAKER_PROGRAM=train.py`
+3. `SAGEMAKER_SUBMIT_DIRECTORY` env var not honored by SKLearn container
+
+**Root fix:** Two separate ECR images:
+```dockerfile
+# Image 1: inference (current)
+FROM sagemaker-scikit-learn:1.2-1-cpu-py3
+COPY training/train.py /opt/ml/code/train.py
+ENV SAGEMAKER_PROGRAM=train.py
+
+# Image 2: fine-tuning (needed)
+FROM sagemaker-scikit-learn:1.2-1-cpu-py3
+RUN pip install transformers torch sentencepiece accelerate
+COPY llm/finetuning/finetune.py /opt/ml/code/finetune.py
+ENV SAGEMAKER_PROGRAM=finetune.py
+```
+
+**Status:** Fine-tuning code complete. Pending separate ECR image + GPU quota.
+
+---
+
+### Issue 14.11 — Flan-T5 Few-shot: Model copies examples
+
+**Symptom:**
+```
+Few-shot example: "This new customer paying premium prices is at high churn risk."
+Model output:     "This new customer paying premium prices is at high churn risk."
+```
+
+**Root cause:** Flan-T5-Large (780M params) pattern-matches few-shot examples instead of generalizing from them. It copies the closest matching example verbatim.
+
+**Fix:** Use simple direct Q&A format — Flan-T5 was specifically trained on this:
+```
+# Bad — few-shot causes copying
+"Example: Month-to-month contract → offer discount
+Now analyze: Month-to-month, $85/month → "
+
+# Good — direct question
+"What is the best offer to prevent churn for a telecom customer 
+on month-to-month contract paying $85 monthly?"
+```
+
+**Prevention:** Add `repetition_penalty=1.3` to reduce copying:
+```python
+"parameters": {
+    "max_new_tokens": 50,
+    "repetition_penalty": 1.3,
+    "do_sample": False,
+}
+```
+
+---
+
+### Issue 14.12 — Langfuse API keys exposed in chat
+
+**What happened:** Langfuse API keys (`pk-lf-...`, `sk-lf-...`) were accidentally pasted into a chat session.
+
+**Immediate action:**
+1. Go to https://cloud.langfuse.com → Project Settings → API Keys
+2. Delete the exposed keys immediately
+3. Create new API keys
+4. Update all scripts with new keys
+5. Store new keys in AWS Secrets Manager
+
+**Prevention:**
+- Never paste API keys, tokens, or credentials into any chat
+- Use environment variables or AWS Secrets Manager
+- Add `detect-secrets` pre-commit hook:
+```bash
+pip install detect-secrets
+detect-secrets scan > .secrets.baseline
+# Add to .pre-commit-config.yaml
+```
+
+---
+
+## 15. Docker Build Performance Issues
+
+---
+
+### Issue 15.1 — Docker build takes 15+ minutes with torch
+
+**Root cause:** `torch` package is ~800MB. Combined with `transformers` (500MB) and base image pull, total build time exceeds 20 minutes on slow connections.
+
+**Fix options:**
+
+1. **Use `--no-cache` only when necessary** — cached layers rebuild in seconds
+2. **Split into two images** — stable deps image + code image:
+```dockerfile
+# Build once (stable deps — rarely changes)
+FROM sagemaker-scikit-learn:1.2-1-cpu-py3 AS base-deps
+RUN pip install torch transformers sentencepiece
+
+# Build often (code — changes frequently)
+FROM base-deps AS finetune
+COPY llm/finetuning/finetune.py /opt/ml/code/finetune.py
+```
+
+3. **Use AWS CodeBuild** — builds run on cloud hardware, not your Mac
+4. **Pin torch to CPU-only version** — saves 1GB:
+```
+torch==2.0.0+cpu  # CPU only — much smaller
+```
+
+---
+
+## 16. LLMOps Quick Reference
+
+| Problem | Quick Fix |
+|---------|----------|
+| JumpStart 422 error | Use `{"inputs": "..."}` not `{"text_inputs": "..."}` |
+| Flan-T5 echoes prompt | Strip prompt from output: `output.replace(prompt, "").strip()` |
+| Langfuse `.trace()` missing | Use `start_as_current_observation()` in v4 |
+| `langfuse.decorators` missing | Import `observe` from `langfuse` directly |
+| `type=` keyword error | Use `as_type=` parameter |
+| HuggingFace CPU error | Use custom ECR image with `Estimator` class |
+| `finetune.py` not found | Bake into ECR image via Dockerfile COPY |
+| Few-shot model copies | Use simple Q&A format + `repetition_penalty=1.3` |
+| Keys exposed in chat | Rotate immediately in Langfuse dashboard |
+
+---
+
+## LLMOps Debugging Toolkit
+
+```bash
+# Check Flan-T5 endpoint status
+aws sagemaker describe-endpoint \
+  --endpoint-name churn-flan-t5-endpoint \
+  --query '{Status:EndpointStatus,Reason:FailureReason}'
+
+# Get Flan-T5 endpoint logs
+aws logs get-log-events \
+  --log-group-name /aws/sagemaker/Endpoints/churn-flan-t5-endpoint \
+  --log-stream-name $(aws logs describe-log-streams \
+    --log-group-name /aws/sagemaker/Endpoints/churn-flan-t5-endpoint \
+    --query 'logStreams[0].logStreamName' --output text) \
+  --query 'events[*].message' --output text | tail -20
+
+# Check Langfuse connectivity
+python3 -c "
+from langfuse import Langfuse
+lf = Langfuse(public_key='pk-lf-...', secret_key='sk-lf-...', host='https://cloud.langfuse.com')
+print(lf.auth_check())
+"
+
+# Check available Langfuse methods (version-safe)
+python3 -c "
+from langfuse import Langfuse
+lf = Langfuse()
+print([m for m in dir(lf) if not m.startswith('_')])
+"
+
+# Test Flan-T5 endpoint directly
+python3 << 'EOF'
+import boto3, json
+runtime = boto3.client("sagemaker-runtime", region_name="us-east-1")
+payload = {"inputs": "What is 2+2?", "parameters": {"max_new_tokens": 10}}
+response = runtime.invoke_endpoint(
+    EndpointName="churn-flan-t5-endpoint",
+    ContentType="application/json",
+    Accept="application/json",
+    Body=json.dumps(payload)
+)
+print(json.loads(response["Body"].read()))
+EOF
+
+# Delete Flan-T5 endpoint (stop ~$0.46/hr billing)
+aws sagemaker delete-endpoint \
+  --endpoint-name churn-flan-t5-endpoint \
+  --region us-east-1
+```
+
+---
+
 *Document maintained alongside [Aws-Sagemaker-Project](https://github.com/Himanshu9001/Aws-Sagemaker-Project)*
 *Last updated: May 2026*
