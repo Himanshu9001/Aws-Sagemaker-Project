@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir \
     transformers==4.36.0 \
     torch \
     accelerate \
+    sentencepiece \
+    datasets \
     matplotlib==3.7.1 \
     seaborn==0.12.2 \
     joblib==1.3.2 \
