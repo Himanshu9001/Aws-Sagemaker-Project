@@ -50,6 +50,13 @@ def load_latest_checkpoint(checkpoint_dir):
     logger.info(f"Resumed from checkpoint: {path}")
     return checkpoint
 
+
+# MLflow — parallel tracking alongside stdout metrics
+try:
+    import mlflow
+    MLFLOW_ENABLED = True
+except ImportError:
+    MLFLOW_ENABLED = False
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -143,6 +150,29 @@ def train(args):
         logger.info(f"{name}={value:.4f}")
         print(f"{name}={value:.4f}")
 
+
+    # Log to MLflow in parallel with stdout metrics
+    if MLFLOW_ENABLED:
+        try:
+            mlflow.set_tracking_uri(os.environ.get(
+                "MLFLOW_TRACKING_URI",
+                "https://app-tu745aodtbzc.mlflow.sagemaker.us-east-1.app.aws/"
+            ))
+            mlflow.set_experiment(args.experiment_name)
+            with mlflow.start_run(run_name=f"rf-n{args.n_estimators}-d{args.max_depth}"):
+                # Log hyperparameters
+                mlflow.log_params({
+                    "n_estimators": args.n_estimators,
+                    "max_depth": args.max_depth,
+                    "min_samples_split": args.min_samples_split,
+                })
+                # Log metrics
+                mlflow.log_metrics(metrics)
+                # Log model
+                mlflow.sklearn.log_model(model, "random_forest_model")
+                logger.info(f"MLflow run logged: {mlflow.active_run().info.run_id}")
+        except Exception as e:
+            logger.warning(f"MLflow logging failed (non-fatal): {e}")
     plot_confusion_matrix(y_test, y_pred, OUTPUT_DIR)
     plot_roc_curve(y_test, y_prob, OUTPUT_DIR)
     plot_feature_importance(model, X_train.columns.tolist(), OUTPUT_DIR)
