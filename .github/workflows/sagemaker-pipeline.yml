@@ -1,0 +1,92 @@
+name: SageMaker MLOps Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'training/**'
+      - 'processing/**'
+      - 'pipelines/**'
+  workflow_dispatch:  # manual trigger from GitHub UI
+
+jobs:
+  trigger-sagemaker-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install sagemaker==2.257.3 boto3 pytz --quiet
+
+      - name: Verify AWS connection
+        run: |
+          aws sts get-caller-identity
+          aws s3 ls s3://churn-sagemaker-artifacts/data/raw/
+
+      - name: Trigger SageMaker Pipeline
+        run: |
+          python3 << 'PYEOF'
+          import boto3
+          import sagemaker
+          from sagemaker.session import Session
+
+          session   = Session()
+          sm_client = boto3.client("sagemaker", region_name="us-east-1")
+
+          # Start pipeline execution
+          response = sm_client.start_pipeline_execution(
+              PipelineName="churn-prediction-pipeline",
+              PipelineExecutionDescription=f"Triggered by GitHub Actions — ${{ github.sha }}",
+              PipelineParameters=[
+                  {"Name": "RocAucThreshold",     "Value": "0.83"},
+                  {"Name": "InstanceType",        "Value": "ml.m5.large"},
+                  {"Name": "ModelApprovalStatus", "Value": "PendingManualApproval"},
+              ]
+          )
+
+          execution_arn = response["PipelineExecutionArn"]
+          print(f"Pipeline execution started: {execution_arn}")
+
+          # Wait for completion
+          import time
+          while True:
+              desc = sm_client.describe_pipeline_execution(
+                  PipelineExecutionArn=execution_arn
+              )
+              status = desc["PipelineExecutionStatus"]
+              print(f"Status: {status}")
+
+              if status == "Succeeded":
+                  print("Pipeline completed successfully!")
+                  break
+              elif status in ["Failed", "Stopped"]:
+                  raise Exception(f"Pipeline failed with status: {status}")
+
+              time.sleep(60)
+          PYEOF
+
+      - name: Check pipeline results
+        run: |
+          aws sagemaker list-pipeline-execution-steps \
+            --pipeline-execution-arn $(aws sagemaker list-pipeline-executions \
+              --pipeline-name churn-prediction-pipeline \
+              --query 'PipelineExecutionSummaries[0].PipelineExecutionArn' \
+              --output text) \
+            --query 'PipelineExecutionSteps[*].{Step:StepName,Status:StepStatus}' \
+            --output table
