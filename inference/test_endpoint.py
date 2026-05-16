@@ -2,7 +2,7 @@ import boto3
 import json
 
 runtime       = boto3.client("sagemaker-runtime", region_name="us-east-1")
-endpoint_name = "churn-prediction-endpoint"
+endpoint_name = "churn-prediction-serverless"
 
 # Sample: gender=0, tenure=12, Partner=1, Dependents=0...
 sample = "0,12,1,0,1,1,2,1,1,1,1,1,0,1,1,3,1,65.5,850.5"
