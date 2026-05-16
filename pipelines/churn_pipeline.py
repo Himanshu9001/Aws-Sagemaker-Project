@@ -80,6 +80,7 @@ estimator = SKLearn(
     sagemaker_session=session,
     base_job_name="churn-pipeline-train",
     disable_profiler=True,
+    volume_kms_key="arn:aws:kms:us-east-1:011528270076:key/7a472d8c-f8ab-427b-8ff3-af364d070429",
     image_uri=ECR_IMAGE,
     use_spot_instances=True,
     max_run=3600,

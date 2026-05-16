@@ -1,0 +1,10 @@
+{
+  "key_id": "7a472d8c-f8ab-427b-8ff3-af364d070429",
+  "key_arn": "arn:aws:kms:us-east-1:011528270076:key/7a472d8c-f8ab-427b-8ff3-af364d070429",
+  "alias": "alias/churn-mlops-key",
+  "usage": {
+    "s3_bucket": "churn-sagemaker-artifacts",
+    "training_volume": "ml.m5.large EBS volumes",
+    "description": "Customer-managed KMS key for churn MLOps encryption at rest"
+  }
+}
