@@ -6,6 +6,7 @@ FROM 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-c
 
 # Install dependencies at build time — not at runtime
 RUN pip install --no-cache-dir \
+    mlflow>=2.0.0 \
     matplotlib==3.7.1 \
     seaborn==0.12.2 \
     joblib==1.3.2 \
