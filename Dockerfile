@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir \
     mlflow>=2.0.0 \
     protobuf==3.20.3 \
     sagemaker-mlflow \
+    transformers==4.36.0 \
+    torch \
+    accelerate \
     matplotlib==3.7.1 \
     seaborn==0.12.2 \
     joblib==1.3.2 \
