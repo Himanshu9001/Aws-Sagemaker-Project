@@ -20,6 +20,8 @@ from sagemaker.workflow.parameters import ParameterFloat, ParameterString, Param
 from sagemaker.workflow.properties import PropertyFile
 
 session = Session()
+ECR_IMAGE = "011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:latest"
+
 role    = "arn:aws:iam::011528270076:role/sagemaker-churn-execution-role"
 bucket  = "churn-sagemaker-artifacts"
 region  = "us-east-1"
@@ -78,6 +80,7 @@ estimator = SKLearn(
     sagemaker_session=session,
     base_job_name="churn-pipeline-train",
     disable_profiler=True,
+    image_uri=ECR_IMAGE,
     use_spot_instances=True,
     max_run=3600,
     max_wait=7200,

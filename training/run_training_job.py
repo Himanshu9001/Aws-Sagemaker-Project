@@ -14,10 +14,14 @@ metric_definitions = [
     {"Name": "recall",    "Regex": "recall=([0-9\\.]+)"},
 ]
 
+# Custom ECR image — pre-installed dependencies, no runtime pip install
+ECR_IMAGE = "011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:latest"
+
 estimator = SKLearn(
     entry_point="train.py",
     source_dir="training/",
     framework_version="1.2-1",
+    image_uri=ECR_IMAGE,
     instance_type="ml.m5.large",
     instance_count=1,
     role=role,
