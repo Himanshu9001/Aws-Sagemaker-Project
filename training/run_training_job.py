@@ -38,6 +38,8 @@ estimator = SKLearn(
         "experiment_name":   "churn-prediction"
     },
     output_path=f"s3://{bucket}/models/",
+    checkpoint_s3_uri=f"s3://{bucket}/checkpoints/",
+    checkpoint_local_path="/opt/ml/checkpoints",
 )
 
 inputs = {

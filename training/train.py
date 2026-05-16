@@ -16,6 +16,40 @@ import os
 import json
 import argparse
 
+
+import pickle
+
+# SageMaker Spot checkpoint paths
+CHECKPOINT_DIR = "/opt/ml/checkpoints"
+
+def save_checkpoint(model, metrics, epoch, checkpoint_dir):
+    """Save model checkpoint to local dir — SageMaker syncs to S3 automatically."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint = {
+        "model": model,
+        "metrics": metrics,
+        "epoch": epoch
+    }
+    path = os.path.join(checkpoint_dir, f"checkpoint_{epoch}.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(checkpoint, f)
+    logger.info(f"Checkpoint saved: {path}")
+    return path
+
+def load_latest_checkpoint(checkpoint_dir):
+    """Resume from latest checkpoint if exists — handles Spot interruption recovery."""
+    if not os.path.exists(checkpoint_dir):
+        return None
+    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.endswith(".pkl")]
+    if not checkpoints:
+        return None
+    latest = sorted(checkpoints)[-1]
+    path = os.path.join(checkpoint_dir, latest)
+    with open(path, "rb") as f:
+        checkpoint = pickle.load(f)
+    logger.info(f"Resumed from checkpoint: {path}")
+    return checkpoint
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -92,7 +126,15 @@ def train(args):
         random_state=42,
         n_jobs=-1
     )
-    model.fit(X_train, y_train)
+    # Check for existing checkpoint — resume if Spot was interrupted
+    checkpoint = load_latest_checkpoint(CHECKPOINT_DIR)
+    if checkpoint:
+        logger.info(f"Resuming from checkpoint — skipping retraining")
+        model = checkpoint["model"]
+    else:
+        model.fit(X_train, y_train)
+        # Save checkpoint after training
+        save_checkpoint(model, {}, 1, CHECKPOINT_DIR)
 
     metrics, y_pred, y_prob = evaluate_model(model, X_test, y_test)
 
