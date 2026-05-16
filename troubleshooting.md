@@ -1202,6 +1202,23 @@ aws s3 ls s3://bucket/models/ --recursive | grep model.tar.gz
 ```
 
 ---
+---
+
+### Issue — Flan-T5 Fine-tuning: Custom ECR + Entry Point Conflict
+
+**Problem:** SKLearn-based custom ECR image bakes `SAGEMAKER_PROGRAM=train.py` — overriding `finetune.py` entry point requires full image rebuild including `sentencepiece`, `torch`, `transformers` (~3GB).
+
+**Root cause:** Two conflicting design decisions:
+1. Custom ECR image bakes `train.py` for fast RandomForest training
+2. Fine-tuning needs a different entry point with different dependencies
+
+**Correct solution:** Two separate ECR images:
+- `churn-mlops:inference` — sklearn, joblib, matplotlib (current image)
+- `churn-mlops:finetune` — transformers, torch, sentencepiece, accelerate
+
+**Status:** Fine-tuning code complete (`finetune.py`, `create_dataset.py`, `run_finetuning_job.py`). Pending GPU quota approval + separate fine-tuning ECR image.
+
+---
 
 *Document maintained alongside [Aws-Sagemaker-Project](https://github.com/Himanshu9001/Aws-Sagemaker-Project)*
 *Last updated: May 2026*
