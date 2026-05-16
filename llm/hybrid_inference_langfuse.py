@@ -10,6 +10,11 @@ os.environ["LANGFUSE_SECRET_KEY"] = "sk-lf-8238ff79-2ba7-46f7-97d8-f6e11cdc46df"
 os.environ["LANGFUSE_HOST"]       = "https://cloud.langfuse.com"
 
 runtime  = boto3.client("sagemaker-runtime", region_name="us-east-1")
+
+# Import prompt manager for versioned prompts
+import sys
+sys.path.insert(0, "/home/sagemaker-user/Aws-Sagemaker-Project/llm")
+from prompt_manager import compile_prompt
 langfuse = Langfuse(
     public_key="pk-lf-d298883b-9e0a-46f3-b519-d7b1f1297af1",
     secret_key="sk-lf-8238ff79-2ba7-46f7-97d8-f6e11cdc46df",
@@ -82,9 +87,16 @@ def hybrid_predict_traced(features_csv, customer_id=None):
     tenure   = next((f["value"] for f in top_features if f["feature"]=="tenure"), "unknown")
 
     if prediction == 1:
-        prompt = f"What is the best offer to prevent churn for a telecom customer on {contract} contract paying {charges} monthly with {tenure} tenure and {probability:.0%} churn risk?"
+        prompt, _ = compile_prompt("churn-retention-v1", {
+            "contract": contract, "charges": charges,
+            "tenure": tenure, "probability": f"{probability:.0%}"
+        })
+        prompt = prompt or f"What is the best offer to prevent churn for a telecom customer on {contract} contract paying {charges} monthly with {tenure} tenure and {probability:.0%} churn risk?"
     else:
-        prompt = f"What engagement strategy should a telecom company use for a loyal customer with {tenure} tenure and only {probability:.0%} churn risk?"
+        prompt, _ = compile_prompt("churn-engagement-v1", {
+            "tenure": tenure, "probability": f"{probability:.0%}"
+        })
+        prompt = prompt or f"What engagement strategy should a telecom company use for a loyal customer with {tenure} tenure and only {probability:.0%} churn risk?"
 
     # Step 2 — Flan-T5 LLM generation
     with langfuse.start_as_current_observation(

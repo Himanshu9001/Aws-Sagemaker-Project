@@ -1,0 +1,1 @@
+What engagement strategy should a telecom company use for a loyal customer with {{tenure}} tenure and only {{probability}} churn risk?

@@ -1,0 +1,1 @@
+What is the best offer to prevent churn for a telecom customer on {{contract}} contract paying {{charges}} monthly with {{tenure}} tenure and {{probability}} churn risk?

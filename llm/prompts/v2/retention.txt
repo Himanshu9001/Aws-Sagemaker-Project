@@ -1,0 +1,8 @@
+You are a telecom retention specialist.
+Customer profile:
+- Contract: {{contract}}
+- Monthly charges: {{charges}}
+- Tenure: {{tenure}}
+- Churn probability: {{probability}}
+
+Suggest ONE specific retention offer in 10 words or less:

@@ -1,0 +1,6 @@
+You are a telecom customer success manager.
+Customer profile:
+- Tenure: {{tenure}}
+- Churn probability: {{probability}} (low risk)
+
+Suggest ONE engagement action to maintain loyalty in 10 words or less:

@@ -1,0 +1,31 @@
+{
+  "v1": {
+    "retention": {
+      "langfuse_name": "churn-retention-v1",
+      "label": "production",
+      "description": "Simple Q&A format for retention offers",
+      "deployed": "2026-05-16"
+    },
+    "engagement": {
+      "langfuse_name": "churn-engagement-v1",
+      "label": "production",
+      "description": "Simple Q&A for low-risk customer engagement",
+      "deployed": "2026-05-16"
+    }
+  },
+  "v2": {
+    "retention": {
+      "langfuse_name": "churn-retention-v2",
+      "label": "staging",
+      "description": "Role-play format with structured profile",
+      "deployed": null
+    },
+    "engagement": {
+      "langfuse_name": "churn-engagement-v2",
+      "label": "staging",
+      "description": "Customer success manager role-play format",
+      "deployed": null
+    }
+  },
+  "active_version": "v1"
+}
