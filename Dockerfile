@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir \
     mlflow>=2.0.0 \
     protobuf==3.20.3 \
     sagemaker-mlflow \
+    sagemaker==2.257.3 \
     matplotlib==3.7.1 \
     seaborn==0.12.2 \
     joblib==1.3.2 \
