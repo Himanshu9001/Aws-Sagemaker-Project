@@ -154,10 +154,15 @@ def train(args):
     # Log to MLflow in parallel with stdout metrics
     if MLFLOW_ENABLED:
         try:
-            mlflow.set_tracking_uri(os.environ.get(
+            import boto3
+            tracking_uri = os.environ.get(
                 "MLFLOW_TRACKING_URI",
                 "https://app-tu745aodtbzc.mlflow.sagemaker.us-east-1.app.aws/"
-            ))
+            )
+            # SageMaker managed MLflow requires IAM auth via sagemaker-mlflow SDK
+            from sagemaker.mlflow.tracking import MlflowTrackingServer
+            mlflow.set_tracking_uri(tracking_uri)
+            os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
             mlflow.set_experiment(args.experiment_name)
             with mlflow.start_run(run_name=f"rf-n{args.n_estimators}-d{args.max_depth}"):
                 # Log hyperparameters

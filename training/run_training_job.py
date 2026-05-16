@@ -31,6 +31,10 @@ estimator = SKLearn(
     max_run=3600,
     max_wait=7200,
     metric_definitions=metric_definitions,
+    environment={
+        "MLFLOW_TRACKING_URI": "https://app-tu745aodtbzc.mlflow.sagemaker.us-east-1.app.aws/",
+        "AWS_DEFAULT_REGION": "us-east-1",
+    },
     hyperparameters={
         "n_estimators":      100,
         "max_depth":         10,
