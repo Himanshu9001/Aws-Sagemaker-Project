@@ -35,6 +35,11 @@ jobs:
         run: |
           pip install sagemaker==2.257.3 boto3 pytz --quiet
 
+
+      - name: Run unit tests
+        run: |
+          pip install pytest scikit-learn joblib pandas numpy matplotlib seaborn --quiet
+          pytest tests/ -v
       - name: Verify AWS connection
         run: |
           aws sts get-caller-identity

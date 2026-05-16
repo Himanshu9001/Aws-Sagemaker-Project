@@ -1,0 +1,48 @@
+name: Build and Push ECR Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'training/train.py'
+      - 'training/requirements.txt'
+  workflow_dispatch:
+
+jobs:
+  build-ecr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            us-east-1
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region us-east-1 | \
+            docker login --username AWS --password-stdin \
+            011528270076.dkr.ecr.us-east-1.amazonaws.com
+
+      - name: Build and push image
+        run: |
+          docker build --platform linux/amd64 \
+            -t 011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:${{ github.sha }} \
+            -t 011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:latest \
+            -f Dockerfile .
+          docker push 011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:${{ github.sha }}
+          docker push 011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:latest
+          echo "Image pushed: sha=${{ github.sha }}"
+
+      - name: Update ECR image tag in pipeline
+        run: |
+          echo "ECR_IMAGE=011528270076.dkr.ecr.us-east-1.amazonaws.com/churn-mlops:${{ github.sha }}" \
+            >> $GITHUB_ENV
+          echo "New image tag: ${{ github.sha }}"

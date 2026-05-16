@@ -1,27 +1,30 @@
-# Custom SageMaker Training Image — Churn MLOps
-# Extends official SKLearn base image with pre-installed dependencies
-# Eliminates runtime pip install — saves 60-90 seconds per Training Job
+# Multi-stage Dockerfile — maximizes layer cache hits
+# Stage 1: deps — only rebuilds when requirements change
+# Stage 2: code — only rebuilds when train.py changes
 
-FROM 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3
+# ── Stage 1: Install dependencies ────────────────────────────────────────────
+FROM 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3 AS deps
 
-# Install dependencies at build time — not at runtime
+# Install at build time — eliminates 60-90s runtime pip install
+# protobuf==3.20.3 required — mlflow>=2.0 pulls 4.x which breaks sagemaker_containers
 RUN pip install --no-cache-dir \
     mlflow>=2.0.0 \
     protobuf==3.20.3 \
     sagemaker-mlflow \
-    sagemaker==2.257.3 \
     matplotlib==3.7.1 \
     seaborn==0.12.2 \
     joblib==1.3.2 \
     pandas==1.5.3 \
     numpy==1.24.3
 
-# Copy training scripts into image
+# ── Stage 2: Copy code ────────────────────────────────────────────────────────
+FROM deps AS final
+
+# Copy training scripts — invalidates only this layer when code changes
 COPY training/train.py /opt/ml/code/train.py
 COPY training/requirements.txt /opt/ml/code/requirements.txt
 
-# Set working directory
 WORKDIR /opt/ml/code
 
-# SageMaker expects this environment variable
-ENV SAGEMAKER_PROGRAM train.py
+# SageMaker entry point
+ENV SAGEMAKER_PROGRAM=train.py

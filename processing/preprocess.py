@@ -43,7 +43,7 @@ def preprocess(df):
     df['Churn'] = df['Churn'].map({'Yes': 1, 'No': 0})
 
     # Label encode all remaining categoricals
-    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'str']).columns.tolist()
     logger.info(f"Encoding categorical columns: {categorical_cols}")
     le = LabelEncoder()
     for col in categorical_cols:
